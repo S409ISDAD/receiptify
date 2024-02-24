@@ -53,6 +53,10 @@ const sleep = async (duration) => {
   return new Promise(r => setTimeout(r, duration));
 }
 
+const getAppropriateAttribute = (element, attributeName) => {
+  return element ? element.getAttribute(attributeName) : null;
+}
+
 const runApp = async () => {
   // get answers to questions
   const items = await setup.askQuestions();
@@ -80,7 +84,11 @@ const runApp = async () => {
     status.message('Getting entry point...');
     let res = await request.get(website);
     html = parser.parse(res);
-    entryPoint = html.querySelector('#surveyEntryForm').getAttribute('action').replace('Index.aspx?', '');
+    const surveyEntryForm = html.querySelector('#surveyEntryForm');
+    if (!surveyEntryForm) {
+      throw new Error('Failed to find survey entry form.');
+    }
+    entryPoint = getAppropriateAttribute(surveyEntryForm, 'action').replace('Index.aspx?', '');
 
     if (!entryPoint) {
       throw new Error('Failed to get entry point.');
@@ -136,8 +144,8 @@ const runApp = async () => {
 
       html = parser.parse(res);
 
-      const IoNF = html.querySelector('#IoNF').getAttribute('value');
-      const PostedFNS = html.querySelector('#PostedFNS').getAttribute('value');
+      const IoNF = getAppropriateAttribute(html.querySelector('#IoNF'), 'value');
+      const PostedFNS = getAppropriateAttribute(html.querySelector('#PostedFNS'), 'value');
       let questions = [...new Set([...html.querySelectorAll('[type=checkbox],[type=radio],[type=text],textarea')].map(i => i.getAttribute('name')))];
 
       const dataBuilder = {
