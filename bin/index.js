@@ -86,7 +86,7 @@ const runApp = async () => {
     html = parser.parse(res);
     const surveyEntryForm = html.querySelector('#surveyEntryForm');
     if (!surveyEntryForm) {
-      throw new Error('Failed to find survey entry form.');
+      throw new Error('Failed to find survey entry form. LOL');
     }
     entryPoint = getAppropriateAttribute(surveyEntryForm, 'action').replace('Index.aspx?', '');
 
