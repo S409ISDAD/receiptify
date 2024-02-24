@@ -44,77 +44,63 @@ const questionAnswers = {
     'S000070': '%%email%%',
     'S000071': '%%email%%'
   }
-}
+};
 
-let html, entryPoint;
-
-// helper function to sleep as to not make requests too quickly.
 const sleep = async (duration) => {
-  return new Promise(r => setTimeout(r, duration));
-}
+  return new Promise(resolve => setTimeout(resolve, duration));
+};
 
 const runApp = async () => {
-  // get answers to questions
   const items = await setup.askQuestions();
-  let { version, code, email } = items;
+  const { version, code, email } = items;
 
-  // check to make sure the receipt version is programmed
   if (version !== 'mcdonalds') {
     return console.log(chalk.red('The version of this script has not yet been written'));
   }
 
-  // set the website and status for the remainder of the scrape
   const website = websites[version];
   const status = new cli.Spinner('Starting Process...');
-
-  // start the status wheel
   status.start();
 
   try {
-    // do one final check on the receipt code.
-    const [ cn1, cn2, cn3 ] = code.split('-');
+    const [cn1, cn2, cn3] = code.split('-');
     if (!cn2 || !cn3) {
       throw new Error('Invalid Receipt Code Provided');
     }
 
-    status.message('Getting entry point...');
-    let res = await request.get(website);
-    html = parser.parse(res);
+    const res = await request.get(website);
+    const html = parser.parse(res);
     const surveyEntryForm = html.querySelector('#surveyEntryForm');
-    if (!surveyEntryForm) {
-      throw new Error('Failed to find survey entry form.');
-    }
-    entryPoint = surveyEntryForm.getAttribute('action');
-    if (!entryPoint) {
-      throw new Error('Failed to get entry point.');
-    }
+
+    let entryPoint = surveyEntryForm.getAttribute('action') || '';
     entryPoint = entryPoint.replace('Index.aspx?', '');
 
     await sleep(500);
 
-    status.message('Making first request...');
-    res = await request.post(`${website}/Index.aspx?${entryPoint}`, {
+    const firstRequestData = {
       JavascriptEnabled: '1',
       FIP: 'True',
       P: '1',
       NextButton: 'Continue'
-    });
+    };
+
+    const firstRequestResponse = await request.post(`${website}/Index.aspx?${entryPoint}`, firstRequestData);
 
     await sleep(500);
 
-    status.message('Making second request...')
-    res = await request.post(`${website}/Index.aspx?${entryPoint}`, {
+    const secondRequestData = {
       JavascriptEnabled: '1',
       FIP: 'True',
       P: '2',
       Receipt: '1',
       NextButton: 'Next'
-    });
+    };
+
+    const secondRequestResponse = await request.post(`${website}/Index.aspx?${entryPoint}`, secondRequestData);
 
     await sleep(500);
 
-    status.message('Submitting receipt data...')
-    res = await request.post(`${website}/Survey.aspx?${entryPoint}`, {
+    const submitData = {
       JavascriptEnabled: '1',
       FIP: 'True',
       CN1: cn1,
@@ -123,45 +109,37 @@ const runApp = async () => {
       Pound: '1',
       Pence: '99',
       NextButton: 'Start'
-    });
-    html = parser.parse(res);
+    };
 
-    if (html.querySelector('#BlockPage') || html.querySelector('.Error')) {
+    const submitResponse = await request.post(`${website}/Survey.aspx?${entryPoint}`, submitData);
+    const submitHtml = parser.parse(submitResponse);
+
+    if (submitHtml.querySelector('#BlockPage') || submitHtml.querySelector('.Error')) {
       throw new Error('The code you tried to enter has expired.');
     }
 
-    // answer first question
     let questionNum = 1;
     let finished = false;
 
     do {
+      const IoNF = submitHtml.querySelector('#IoNF').getAttribute('value');
+      const PostedFNS = submitHtml.querySelector('#PostedFNS').getAttribute('value');
 
-      status.message(`Answering question ${questionNum}`);
-
-      html = parser.parse(res);
-
-      const IoNF = html.querySelector('#IoNF').getAttribute('value');
-      const PostedFNS = html.querySelector('#PostedFNS').getAttribute('value');
-      let questions = [...new Set([...html.querySelectorAll('[type=checkbox],[type=radio],[type=text],textarea')].map(i => i.getAttribute('name')))];
-
-      const dataBuilder = {
-        IoNF,
-        PostedFNS
-      };
+      const questions = [...new Set([...submitHtml.querySelectorAll('[type=checkbox],[type=radio],[type=text],textarea')].map(i => i.getAttribute('name')))];
+      const dataBuilder = { IoNF, PostedFNS };
 
       questions.forEach(question => {
         if (questionAnswers[version][question]) {
-          const answer = questionAnswers[version][question] === '%%email%%' ?
-            email : questionAnswers[version][question];
+          const answer = questionAnswers[version][question] === '%%email%%' ? email : questionAnswers[version][question];
           dataBuilder[question] = answer;
-        } else if (question.substr(0,1) === 'R') {
+        } else if (question.substr(0, 1) === 'R') {
           dataBuilder[question] = 5;
         } else {
-          dataBuilder[question] = ''
+          dataBuilder[question] = '';
         }
       });
 
-      res = await request.post(`${website}/Survey.aspx?${entryPoint}`, dataBuilder);
+      const answerResponse = await request.post(`${website}/Survey.aspx?${entryPoint}`, dataBuilder);
 
       if (IoNF === '311') {
         finished = true;
@@ -169,9 +147,7 @@ const runApp = async () => {
       }
 
       questionNum++;
-
       await sleep(250);
-
     } while (questionNum < 25 && !finished);
 
     if (!finished) {
@@ -179,11 +155,12 @@ const runApp = async () => {
     }
 
     status.stop();
-    return console.log(chalk.green(`Code generated and emailed to ${email}.`));
+    console.log(chalk.green(`Code generated and emailed to ${email}.`));
 
   } catch (err) {
     status.stop();
     console.log(chalk.red(err.message));
   }
 };
+
 runApp();
