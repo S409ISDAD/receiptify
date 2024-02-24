@@ -82,7 +82,7 @@ const runApp = async () => {
     }
 
     status.message('Getting entry point...');
-    let res = await request.get(website);
+    let res = await request.get("https://www.mcdfoodforthoughts.com");
     html = parser.parse(res);
     const surveyEntryForm = html.querySelector('#surveyEntryForm');
     if (!surveyEntryForm) {
