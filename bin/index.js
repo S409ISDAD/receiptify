@@ -85,9 +85,6 @@ const runApp = async () => {
     let res = await request.get("https://www.mcdfoodforthoughts.com");
     html = parser.parse(res);
     const surveyEntryForm = html.querySelector('#surveyEntryForm');
-    if (!surveyEntryForm) {
-      throw new Error('Failed to find survey entry form. LOL');
-    }
     entryPoint = getAppropriateAttribute(surveyEntryForm, 'action').replace('Index.aspx?', '');
 
     if (!entryPoint) {
