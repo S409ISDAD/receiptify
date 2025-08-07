@@ -2,16 +2,17 @@
 
 const setup = require("./lib/setup");
 const request = require('./lib/request');
+
 const cli = require('clui');
 const parser = require('node-html-parser');
 const chalk = require('chalk');
+const puppeteer = require('puppeteer');
 
 const websites = {
   mcdonalds: 'https://www.mcdfoodforthoughts.com',
   tacobell: null,
   burgerking: null
 };
-
 const questionAnswers = {
   mcdonalds: {
     'R000005': 3,
@@ -44,72 +45,69 @@ const questionAnswers = {
     'S000070': '%%email%%',
     'S000071': '%%email%%'
   }
-};
+}
 
-// Helper to sleep
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// helper function to sleep as to not make requests too quickly.
+const sleep = async (duration) => new Promise(r => setTimeout(r, duration));
+
+// Puppeteer function to get the form action after JS renders the page
+async function getEntryPoint(website) {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.goto(website, { waitUntil: 'networkidle2' });
+
+    // Wait for the form to appear or timeout after 10 seconds
+    await page.waitForSelector('#surveyEntryForm', { timeout: 10000 });
+
+    // Extract the form's action attribute
+    const entryPoint = await page.$eval('#surveyEntryForm', form => form.getAttribute('action'));
+    await browser.close();
+
+    if (!entryPoint) {
+      throw new Error('Form action not found');
+    }
+    return entryPoint.replace('Index.aspx?', '');
+  } catch (e) {
+    await browser.close();
+    throw e;
+  }
+}
 
 const runApp = async () => {
+  const items = await setup.askQuestions();
+  let { version, code, email } = items;
+
+  if (version !== 'mcdonalds') {
+    return console.log(chalk.red('The version of this script has not yet been written'));
+  }
+
+  const website = websites[version];
+  const status = new cli.Spinner('Starting Process...');
+  status.start();
+
   try {
-    const items = await setup.askQuestions();
-    const { version, code, email } = items;
-
-    if (version !== 'mcdonalds') {
-      console.log(chalk.red('The version of this script has not yet been written'));
-      return;
+    const [ cn1, cn2, cn3 ] = code.split('-');
+    if (!cn2 || !cn3) {
+      throw new Error('Invalid Receipt Code Provided');
     }
-
-    const website = websites[version];
-    if (!website) {
-      console.log(chalk.red(`No website configured for version: ${version}`));
-      return;
-    }
-
-    const status = new cli.Spinner('Starting Process...');
-    status.start();
-
-    // Validate receipt code format
-    const [cn1, cn2, cn3] = (code || '').split('-');
-    if (!cn1 || !cn2 || !cn3) {
-      throw new Error('Invalid Receipt Code Provided. Expected format like ABC-123-456.');
-    }
-
-    // Add headers to mimic browser
-    const defaultHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-    };
 
     status.message('Getting entry point...');
-    let res = await request.get(website, { headers: defaultHeaders });
-
-    let html = parser.parse(res);
-    const entryForm = html.querySelector('#surveyEntryForm');
-    if (!entryForm) {
-      console.log(chalk.red('Failed to find the #surveyEntryForm element. Website structure may have changed or request blocked.'));
-      console.log(chalk.gray('Full HTML:'));
-      console.log(html.toString().slice(0, 1000)); // print first 1000 chars only to avoid overload
-      status.stop();
-      return;
-    }
-
-    const entryAction = entryForm.getAttribute('action');
-    if (!entryAction) {
-      throw new Error('Failed to get the action attribute from #surveyEntryForm.');
-    }
-
-    const entryPoint = entryAction.replace('Index.aspx?', '');
+    const entryPoint = await getEntryPoint(website);
 
     await sleep(500);
 
     status.message('Making first request...');
-    res = await request.post(`${website}/Index.aspx?${entryPoint}`, {
+    let res = await request.post(`${website}/Index.aspx?${entryPoint}`, {
       JavascriptEnabled: '1',
       FIP: 'True',
       P: '1',
       NextButton: 'Continue'
-    }, { headers: defaultHeaders });
+    });
 
     await sleep(500);
 
@@ -120,7 +118,7 @@ const runApp = async () => {
       P: '2',
       Receipt: '1',
       NextButton: 'Next'
-    }, { headers: defaultHeaders });
+    });
 
     await sleep(500);
 
@@ -134,61 +132,39 @@ const runApp = async () => {
       Pound: '1',
       Pence: '99',
       NextButton: 'Start'
-    }, { headers: defaultHeaders });
-
-    html = parser.parse(res);
+    });
+    let html = parser.parse(res);
 
     if (html.querySelector('#BlockPage') || html.querySelector('.Error')) {
-      throw new Error('The code you tried to enter has expired or is invalid.');
+      throw new Error('The code you tried to enter has expired.');
     }
 
-    // Loop through questions
     let questionNum = 1;
     let finished = false;
 
     do {
       status.message(`Answering question ${questionNum}`);
-
       html = parser.parse(res);
 
-      // Defensive checks for required hidden inputs
-      const IoNFEl = html.querySelector('#IoNF');
-      const PostedFNSEl = html.querySelector('#PostedFNS');
+      const IoNF = html.querySelector('#IoNF').getAttribute('value');
+      const PostedFNS = html.querySelector('#PostedFNS').getAttribute('value');
+      let questions = [...new Set([...html.querySelectorAll('[type=checkbox],[type=radio],[type=text],textarea')].map(i => i.getAttribute('name')))];
 
-      if (!IoNFEl || !PostedFNSEl) {
-        throw new Error('Missing required form tokens (IoNF or PostedFNS). Website may have changed.');
-      }
-
-      const IoNF = IoNFEl.getAttribute('value');
-      const PostedFNS = PostedFNSEl.getAttribute('value');
-
-      // Collect unique question names from input elements
-      const questions = [...new Set(
-        [...html.querySelectorAll('input[type=checkbox], input[type=radio], input[type=text], textarea')]
-          .map(i => i.getAttribute('name'))
-          .filter(Boolean)
-      )];
-
-      const dataBuilder = {
-        IoNF,
-        PostedFNS
-      };
+      const dataBuilder = { IoNF, PostedFNS };
 
       questions.forEach(question => {
-        if (questionAnswers[version][question] !== undefined) {
-          let answer = questionAnswers[version][question];
-          if (answer === '%%email%%') answer = email;
+        if (questionAnswers[version][question]) {
+          const answer = questionAnswers[version][question] === '%%email%%' ? email : questionAnswers[version][question];
           dataBuilder[question] = answer;
         } else if (question.startsWith('R')) {
-          dataBuilder[question] = 5;  // default rating for unknown questions starting with R
+          dataBuilder[question] = 5;
         } else {
           dataBuilder[question] = '';
         }
       });
 
-      res = await request.post(`${website}/Survey.aspx?${entryPoint}`, dataBuilder, { headers: defaultHeaders });
+      res = await request.post(`${website}/Survey.aspx?${entryPoint}`, dataBuilder);
 
-      // If IoNF == '311' (magic number?), survey is finished
       if (IoNF === '311') {
         finished = true;
         break;
@@ -200,14 +176,15 @@ const runApp = async () => {
     } while (questionNum < 25 && !finished);
 
     if (!finished) {
-      throw new Error('Timed out attempting to complete the survey.');
+      throw new Error('Timed out attempting to get code.');
     }
 
     status.stop();
     console.log(chalk.green(`Code generated and emailed to ${email}.`));
 
   } catch (err) {
-    console.log(chalk.red(`Error: ${err.message}`));
+    status.stop();
+    console.log(chalk.red(err.message));
   }
 };
 
